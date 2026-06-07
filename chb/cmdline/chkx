@@ -481,6 +481,11 @@ def parse() -> argparse.Namespace:
         help="include callees of all fns_included",
         action="store_true")
     analyzecmd.add_argument(
+        "--struct_nesting_level",
+        type=int,
+        default=1,
+        help="maximum nesting level for struct field expressions (default: 1)")
+    analyzecmd.add_argument(
         "--analyze_all_named",
         help="include all functions named in userdata in the analysis",
         action="store_true")
