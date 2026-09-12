@@ -192,10 +192,16 @@ class ASTInterfaceBasicBlock:
     '''
 
     def assembly_ast(self, astree: "ASTInterface") -> AST.ASTStmt:
-        instrs: List[AST.ASTInstruction] = []
-        for (a, i) in sorted(self.instructions.items(), key=lambda p: p[0]):
-            instrs.extend(i.assembly_ast(astree))
-        return astree.mk_instr_sequence(instrs)
+        # A block with control flow of its own is emitted as fragments rather
+        # than as a single instruction sequence, so that the condition governing
+        # a fragment is kept in the low-level ast instead of being flattened
+        # away with it.
+        if self.basicblock.has_control_flow():
+            self.basicblock.partition_control_flow()
+            return self.fragmented_assembly_ast(astree)
+
+        return self.linear_assembly_ast(
+            astree, sorted(self.instructions.values(), key = lambda p:p.iaddr))
 
     def ast_fragment(
             self, astree: "ASTInterface", frag: "BasicBlockFragment") -> AST.ASTStmt:
@@ -224,6 +230,34 @@ class ASTInterfaceBasicBlock:
             instrs = [self.get_instruction(i.iaddr) for i in frag.linear]
             return self.linear_ast(astree, instrs)
 
+    def assembly_ast_fragment(
+            self,
+            astree: "ASTInterface",
+            frag: "BasicBlockFragment") -> AST.ASTStmt:
+        if frag.is_predicated:
+            theninstrs = [self.get_instruction(i.iaddr) for i in frag.thenbranch]
+            elseinstrs = [self.get_instruction(i.iaddr) for i in frag.elsebranch]
+            thenstmt = self.linear_assembly_block_ast(astree, theninstrs)
+            elsestmt = self.linear_assembly_block_ast(astree, elseinstrs)
+            spans = [(i.iaddr, i.bytestring) for i in theninstrs + elseinstrs]
+            cinstr = theninstrs[0]
+            brcond = cinstr.assembly_ast_cc_condition(astree)
+            if brcond is None:
+                chklogger.logger.warning(
+                    "No low-level instruction predicate expression found at "
+                    + "address %s",
+                    cinstr.iaddr)
+                return self.linear_assembly_ast(astree, theninstrs + elseinstrs)
+
+            instrcount = len(theninstrs) + len(elseinstrs)
+            ifstmt = astree.mk_branch(
+                brcond, thenstmt, elsestmt, cinstr.iaddr, predicated=instrcount)
+            astree.add_stmt_span(ifstmt.locationid, spans)
+            return ifstmt
+        else:
+            instrs = [self.get_instruction(i.iaddr) for i in frag.linear]
+            return self.linear_assembly_ast(astree, instrs)
+
     def fragmented_ast(self, astree: "ASTInterface") -> AST.ASTStmt:
 
         if len(self.basicblock.partition) == 0:
@@ -233,6 +267,19 @@ class ASTInterfaceBasicBlock:
 
         for (a, bf) in sorted(self.basicblock.partition.items()):
             stmt = self.ast_fragment(astree, bf)
+            stmts.append(stmt)
+
+        return astree.mk_block(stmts)
+
+    def fragmented_assembly_ast(self, astree: "ASTInterface") -> AST.ASTStmt:
+
+        if len(self.basicblock.partition) == 0:
+            raise UF.CHBError("Error in fragmented assembly ast")
+
+        stmts: List[AST.ASTStmt] = []
+
+        for (a, bf) in sorted(self.basicblock.partition.items()):
+            stmt = self.assembly_ast_fragment(astree, bf)
             stmts.append(stmt)
 
         return astree.mk_block(stmts)
@@ -267,6 +314,25 @@ class ASTInterfaceBasicBlock:
         instrs: List[AST.ASTInstruction] = []
         for i in instritems:
             instrs.extend(i.ast(astree))
+        return astree.mk_instr_sequence(instrs)
+
+    def linear_assembly_block_ast(
+            self,
+            astree: "ASTInterface",
+            instritems: List[ASTInterfaceInstruction]) -> AST.ASTStmt:
+        instrs: List[AST.ASTInstruction] = []
+        for i in instritems:
+            instrs.extend(i.assembly_ast(astree))
+        instrseq = astree.mk_instr_sequence(instrs)
+        return astree.mk_block([instrseq])
+
+    def linear_assembly_ast(
+            self,
+            astree: "ASTInterface",
+            instritems: List[ASTInterfaceInstruction]) -> AST.ASTStmt:
+        instrs: List[AST.ASTInstruction] = []
+        for i in instritems:
+            instrs.extend(i.assembly_ast(astree))
         return astree.mk_instr_sequence(instrs)
 
     def trampoline_block_ast(
