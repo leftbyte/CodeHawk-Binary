@@ -234,29 +234,29 @@ class ASTInterfaceBasicBlock:
             self,
             astree: "ASTInterface",
             frag: "BasicBlockFragment") -> AST.ASTStmt:
-        if frag.is_predicated:
-            theninstrs = [self.get_instruction(i.iaddr) for i in frag.thenbranch]
-            elseinstrs = [self.get_instruction(i.iaddr) for i in frag.elsebranch]
-            thenstmt = self.linear_assembly_block_ast(astree, theninstrs)
-            elsestmt = self.linear_assembly_block_ast(astree, elseinstrs)
-            spans = [(i.iaddr, i.bytestring) for i in theninstrs + elseinstrs]
-            cinstr = theninstrs[0]
-            brcond = cinstr.assembly_ast_cc_condition(astree)
-            if brcond is None:
-                chklogger.logger.error(
-                    "No low-level instruction predicate expression found at "
-                    + "address %s",
-                    cinstr.iaddr)
-                return self.linear_assembly_ast(astree, theninstrs + elseinstrs)
-
-            instrcount = len(theninstrs) + len(elseinstrs)
-            ifstmt = astree.mk_branch(
-                brcond, thenstmt, elsestmt, cinstr.iaddr, predicated=instrcount)
-            astree.add_stmt_span(ifstmt.locationid, spans)
-            return ifstmt
-        else:
+        if not frag.is_predicated:
             instrs = [self.get_instruction(i.iaddr) for i in frag.linear]
             return self.linear_assembly_ast(astree, instrs)
+
+        theninstrs = [self.get_instruction(i.iaddr) for i in frag.thenbranch]
+        elseinstrs = [self.get_instruction(i.iaddr) for i in frag.elsebranch]
+        thenstmt = self.linear_assembly_block_ast(astree, theninstrs)
+        elsestmt = self.linear_assembly_block_ast(astree, elseinstrs)
+        spans = [(i.iaddr, i.bytestring) for i in theninstrs + elseinstrs]
+        cinstr = theninstrs[0]
+        brcond = cinstr.assembly_ast_cc_condition(astree)
+        if brcond is None:
+            chklogger.logger.error(
+                "No low-level instruction predicate expression found at "
+                + "address %s",
+                cinstr.iaddr)
+            return self.linear_assembly_ast(astree, theninstrs + elseinstrs)
+
+        instrcount = len(theninstrs) + len(elseinstrs)
+        ifstmt = astree.mk_branch(
+            brcond, thenstmt, elsestmt, cinstr.iaddr, predicated=instrcount)
+        astree.add_stmt_span(ifstmt.locationid, spans)
+        return ifstmt
 
     def fragmented_ast(
             self,
