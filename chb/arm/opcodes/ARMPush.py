@@ -218,6 +218,9 @@ class ARMPush(ARMOpcode):
         hl_instrs: List[AST.ASTInstruction] = []
         regsop = self.opargs[1]
         registers = regsop.registers
+        if astree.is_in_wrapper(iaddr):
+            astree.record_spill_slots(
+                iaddr, registers, [str(v) for v in memlhss])
         sp_decr = 4 * len(registers)
         sp_offset = sp_decr
         for (i, r) in enumerate(registers):

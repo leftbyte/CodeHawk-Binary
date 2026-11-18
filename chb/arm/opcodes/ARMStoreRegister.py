@@ -281,7 +281,15 @@ class ARMStoreRegister(ARMOpcode):
 
         xd = ARMStoreRegisterXData(xdata)
 
-        if xd.is_cvmem_ok:
+        # A trampoline payload writes a register by storing to its spill slot.
+        spillreg = (
+            astree.spill_slot_register(str(xd.vmem)) if xd.is_vmem_ok else None)
+
+        if spillreg is not None:
+            lhs = xd.vmem
+            hl_lhs = astree.mk_register_variable_lval(spillreg)
+
+        elif xd.is_cvmem_ok:
             lhs = xd.cvmem
             hl_lhs = XU.xvariable_to_ast_lval(lhs, xdata, iaddr, astree)
 
@@ -336,7 +344,8 @@ class ARMStoreRegister(ARMOpcode):
         # to variables that are part of a struct or array variable, so these
         # assignments must be explicitly forced to appear in the lifting
         if (
-                (not xd.is_vmem_ok)
+                spillreg is not None
+                or (not xd.is_vmem_ok)
                 or lhs.is_memory_variable and cast("VMemoryVariable",
                                                    lhs.denotation).base.is_basevar
                 or hl_lhs.offset.is_index_offset

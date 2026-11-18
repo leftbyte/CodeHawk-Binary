@@ -134,6 +134,8 @@ class ASTInterface:
         self._ignoredlhs = self.mk_variable_lval("ignored")
         self._regdefinitions: Dict[str, Dict[str, Tuple[int, AST.ASTExpr]]] = {}
         self._localvardefinitions: Dict[str, Dict[str, AST.ASTExpr]] = {}
+        self._spill_slots: Dict[str, str] = {}
+        self._spill_writeset: Set[str] = set()
         self._initialize_formals()
         if self._srcprototype is not None:
             astprototype = self._srcprototype.convert(self._typconverter)
@@ -183,6 +185,53 @@ class ASTInterface:
             if p.in_wrapper(addr):
                 return True
         return False
+
+    def wrapper_patchevent(self, addr: str) -> Optional["PatchEvent"]:
+        """Returns the patch event whose trampoline wrapper contains addr."""
+        for p in self.patchevents.values():
+            if p.in_wrapper(addr):
+                return p
+        return None
+
+    def record_spill_slots(
+            self,
+            iaddr: str,
+            registers: List[str],
+            slotvars: List[str]) -> None:
+        """Records the stack variable that the trampoline wrapper's register
+        spill at iaddr writes for each register.
+
+        The spill frame comes from the binary. A patch event that describes
+        its spill slots must agree with it register by register, and the
+        recorded slots then cover only the registers in its write set.
+        """
+        p = self.wrapper_patchevent(iaddr)
+        if p is None or not p.has_extras() or not p.extras.has_trampoline():
+            return
+        trampoline = p.trampoline
+        slotregs = [s.register.upper() for s in trampoline.spillslots]
+        pushregs = [r.upper() for r in registers]
+        if slotregs != pushregs:
+            chklogger.logger.error(
+                "Trampoline spill at %s pushes %s, but the patch results "
+                "describe slots for %s; register writes are not lifted",
+                iaddr, ", ".join(pushregs), ", ".join(slotregs))
+            return
+        for (reg, var) in zip(registers, slotvars):
+            self._spill_slots[var] = reg
+        self._spill_writeset = set(r.upper() for r in trampoline.writeset)
+
+    def trampoline_writes_register(self, reg: str) -> bool:
+        """Returns true if the trampoline payload being lifted may write reg."""
+        return reg.upper() in self._spill_writeset
+
+    def spill_slot_register(self, var: str) -> Optional[str]:
+        """Returns the register that a trampoline payload writes by storing
+        to the spill slot var, if the payload may write that register."""
+        reg = self._spill_slots.get(var)
+        if reg is not None and reg.upper() in self._spill_writeset:
+            return reg
+        return None
 
     @property
     def ignoredlhs(self) -> AST.ASTLval:
