@@ -260,6 +260,14 @@ class ARMCfg(Cfg):
                 trinfo.add_role("returnpath", caseaddr)
                 trampolineblocks[caseaddr] = baddr
 
+            # A payload with exit stubs branches to a stub for each goto too.
+            if patchevent.has_exit_stubs:
+                for case in canonical_cases:
+                    if case.startswith("goto_"):
+                        caseaddr = patchevent.label_address("case_" + case)
+                        trinfo.add_role("exit_" + case, caseaddr)
+                        trampolineblocks[caseaddr] = baddr
+
         cfgedges: Dict[str, List[str]] = {}
 
         for src in localedges:

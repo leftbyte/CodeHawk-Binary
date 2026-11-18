@@ -52,10 +52,14 @@ class ASTInterfaceBasicBlock:
     def __init__(
             self,
             b: "BasicBlock",
-            trampoline: Optional[Dict[str, "BasicBlock"]] = None) -> None:
+            trampoline: Optional[Dict[str, "BasicBlock"]] = None,
+            trampoline_edges: Optional[Dict[str, List[str]]] = None) -> None:
+        """A trampoline whose payload leaves through exit stubs also passes
+        the trampoline's internal edges, from which the payload is lifted."""
         self._b = b
         self._instructions: Dict[str, ASTInterfaceInstruction] = {}
         self._trampoline = trampoline
+        self._trampoline_edges = trampoline_edges
         self._trampoline_instructions: Dict[
             str, Dict[str, ASTInterfaceInstruction]] = {}
 
@@ -605,11 +609,132 @@ class ASTInterfaceBasicBlock:
             raise UF.CHBError("Internal error")
         return self.trampoline_block_ast("continuepath", astree)
 
+    def trampoline_exit_stmt(
+            self, role: str, astree: "ASTInterface") -> List[AST.ASTStmt]:
+        """Returns the statement for leaving the trampoline through the exit
+        stub with the given role. A fallthrough is empty, so control reaches
+        the statements that follow the payload."""
+        if role == "fallthrough":
+            return []
+        if role == "breakout":
+            return [astree.mk_break_stmt()]
+        if role == "continuepath":
+            return [astree.mk_continue_stmt()]
+        if role == "returnpath":
+            # A return value the payload sets travels in R0, which the return
+            # stub restores from its spill slot.
+            rv = (
+                astree.mk_register_variable_expr("R0")
+                if (not astree.returns_void()
+                    and astree.trampoline_writes_register("R0"))
+                else None)
+            return [astree.mk_return_stmt(rv)]
+        if role.startswith("exit_goto_"):
+            destaddr = role[len("exit_goto_"):]
+            return [astree.mk_goto_stmt("L" + destaddr, destaddr)]
+        chklogger.logger.critical("trampoline exit role not recognized: %s", role)
+        return []
+
+    def trampoline_payload_cfg_ast(self, astree: "ASTInterface") -> AST.ASTStmt:
+        """Lifts a payload that leaves through exit stubs from its edges.
+
+        Each payload block is lifted once. A conditional block becomes a
+        branch whose arms run up to the nearest payload block both arms
+        reach, and an edge to an exit stub becomes that exit's statement.
+        """
+        if self._trampoline_edges is None:
+            raise UF.CHBError("Internal error: trampoline edges missing")
+        edges = self._trampoline_edges
+        roles = {bb.baddr: role for (role, bb) in self.trampoline.items()}
+
+        def is_payload(addr: str) -> bool:
+            return roles.get(addr, "").startswith("payload")
+
+        def reach(addr: str) -> List[str]:
+            """Payload blocks reachable from addr, nearest first."""
+            order: List[str] = []
+            frontier = [addr]
+            while frontier:
+                nxt: List[str] = []
+                for a in frontier:
+                    if is_payload(a) and a not in order:
+                        order.append(a)
+                        nxt.extend(edges.get(a, []))
+                frontier = nxt
+            return order
+
+        def merge_of(t: str, f: str) -> Optional[str]:
+            freach = set(reach(f))
+            for a in reach(t):
+                if a in freach:
+                    return a
+            return None
+
+        lifted: Set[str] = set()
+
+        def lift(addr: str, stop: Optional[str]) -> List[AST.ASTStmt]:
+            if addr == stop:
+                return []
+            role = roles.get(addr)
+            if role is None:
+                chklogger.logger.critical(
+                    "trampoline payload edge leaves the trampoline: %s", addr)
+                return []
+            if not role.startswith("payload"):
+                return self.trampoline_exit_stmt(role, astree)
+            if addr in lifted:
+                chklogger.logger.critical(
+                    "trampoline payload block %s reached twice; "
+                    "loops are not supported", addr)
+                return []
+            lifted.add(addr)
+            stmts: List[AST.ASTStmt] = [self.trampoline_block_ast(role, astree)]
+            succs = edges.get(addr, [])
+            if len(succs) == 1:
+                return stmts + lift(succs[0], stop)
+            if len(succs) == 2:
+                (f, t) = (succs[0], succs[1])
+                merge = merge_of(t, f)
+                inner = merge if merge is not None else stop
+                lastinstr = self.trampoline_block_last_instruction(role)
+                cond = self.trampoline_ast_condition(role, astree)
+                if cond is None:
+                    chklogger.logger.error(
+                        "trampoline payload condition not resolved at %s",
+                        lastinstr.iaddr)
+                    cond = astree.mk_temp_lval_expression()
+                ifbranch = astree.mk_block(lift(t, inner))
+                elsebranch = astree.mk_block(lift(f, inner))
+                brstmt = astree.mk_branch(cond, ifbranch, elsebranch, t)
+                stmts.append(brstmt)
+                if merge is not None:
+                    stmts.extend(lift(merge, stop))
+                return stmts
+            if len(succs) > 2:
+                chklogger.logger.critical(
+                    "trampoline payload block %s has %d successors",
+                    addr, len(succs))
+            return stmts
+
+        setupaddr = self.trampoline["setupblock"].baddr
+        entries = [a for a in edges.get(setupaddr, []) if is_payload(a)]
+        if len(entries) != 1:
+            chklogger.logger.critical(
+                "trampoline payload entry not found from %s", setupaddr)
+            return astree.mk_block([])
+        return astree.mk_block(lift(entries[0], None))
+
     def trampoline_ast(self, astree: "ASTInterface") -> AST.ASTStmt:
         stmts: List[AST.ASTStmt] = []
 
         if not self.is_trampoline:
             raise UF.CHBError("Internal error")
+        if self._trampoline_edges is not None:
+            stmts.append(self.trampoline_setup_ast(astree))
+            stmts.append(self.trampoline_payload_cfg_ast(astree))
+            if "fallthrough" in self.trampoline:
+                stmts.append(self.trampoline_takedown_ast(astree))
+            return astree.mk_block(stmts)
         if "setupblock" in self.trampoline:
             stmts.append(self.trampoline_setup_ast(astree))
         if "payload-0" in self.trampoline or "payload" in self.trampoline:

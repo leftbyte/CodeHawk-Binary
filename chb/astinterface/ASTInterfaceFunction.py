@@ -91,7 +91,12 @@ class ASTInterfaceFunction(ASTFunction):
                         roles: Dict[str, "BasicBlock"] = {}
                         for (name, baddr) in cfgblock.roles.items():
                             roles[name] = self.function.blocks[baddr]
-                        astblock = ASTInterfaceBasicBlock(block, roles)
+                        trinfo = cfgblock.trampoline_info
+                        edges = (
+                            trinfo.internal_edges
+                            if trinfo.patchevent.has_exit_stubs
+                            else None)
+                        astblock = ASTInterfaceBasicBlock(block, roles, edges)
                         self._astblocks[addr] = astblock
                     else:
                         astblock = ASTInterfaceBasicBlock(block)
