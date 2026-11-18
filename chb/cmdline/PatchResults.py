@@ -252,6 +252,74 @@ class PatchDestinations:
         return "\n".join(lines)
 
 
+class PatchSpillSlot:
+    """A slot of the trampoline wrapper's spill frame.
+
+    The offset is the byte offset from the spill base, which is the stack
+    pointer after the wrapper spills the registers.
+    """
+
+    def __init__(self, d: Dict[str, Any]) -> None:
+        self._d = d
+
+    @property
+    def slot(self) -> int:
+        return cast(int, self._d["slot"])
+
+    @property
+    def offset(self) -> int:
+        return cast(int, self._d["offset"])
+
+    @property
+    def register(self) -> str:
+        return cast(str, self._d["register"])
+
+    @property
+    def variables(self) -> List[str]:
+        return cast(List[str], self._d.get("variables", []))
+
+    def __str__(self) -> str:
+        names = ", ".join(self.variables)
+        return f"{self.slot:>3} {self.offset:>4} {self.register:<4} {names}"
+
+
+class PatchTrampoline:
+    """The patcher's description of a placed trampoline.
+
+    The exits map each case to the address of its exit stub, and are present
+    only for a trampoline whose payload leaves through exit stubs. The spill
+    slots give the register each slot of the spill frame holds, and the write
+    set lists the registers the payload may write.
+    """
+
+    def __init__(self, d: Dict[str, Any]) -> None:
+        self._d = d
+
+    @property
+    def exits(self) -> Dict[str, str]:
+        return cast(Dict[str, str], self._d.get("exits", {}))
+
+    @property
+    def has_exit_stubs(self) -> bool:
+        return len(self.exits) > 0
+
+    @property
+    def spillslots(self) -> List[PatchSpillSlot]:
+        return [PatchSpillSlot(s) for s in self._d.get("spillslots", [])]
+
+    @property
+    def writeset(self) -> List[str]:
+        return cast(List[str], self._d.get("writeset", []))
+
+    def __str__(self) -> str:
+        lines: List[str] = []
+        for (case, addr) in self.exits.items():
+            lines.append(f"exit {case}: {addr}")
+        lines.append("write set: " + ", ".join(self.writeset))
+        lines.extend(str(s) for s in self.spillslots)
+        return "\n".join(lines)
+
+
 class PatchExtras:
 
     def __init__(self, d: Dict[str, Any], base: str) -> None:
@@ -288,6 +356,13 @@ class PatchExtras:
     @property
     def dispatch_addresses(self) -> Dict[str, str]:
         return self.labeloffsets.dispatch_addresses
+
+    def has_trampoline(self) -> bool:
+        return "trampoline" in self._d
+
+    @property
+    def trampoline(self) -> PatchTrampoline:
+        return PatchTrampoline(self._d.get("trampoline", {}))
 
     def __str__(self) -> str:
         lines: List[str] = []
@@ -355,6 +430,14 @@ class PatchEvent:
     @property
     def dispatch_addresses(self) -> Dict[str, str]:
         return self.extras.dispatch_addresses
+
+    @property
+    def trampoline(self) -> PatchTrampoline:
+        return self.extras.trampoline
+
+    @property
+    def has_exit_stubs(self) -> bool:
+        return self.has_extras() and self.extras.trampoline.has_exit_stubs
 
     def has_wrapper(self) -> bool:
         return self.details.has_wrapper()
@@ -452,6 +535,8 @@ class PatchResults:
                     r["fallthrough"] = e.fallthrough_destination
                 if e.case_fallthrough_jump is not None:
                     r["fallthrough-jump"] = e.case_fallthrough_jump
+                if e.has_exit_stubs:
+                    r["exits"] = ",".join(e.trampoline.exits.values())
                 result.append(r)
 
         return result
